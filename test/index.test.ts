@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fuzzyScore, parseSession, parseSessionScope, rankSessions, resolveShortcut, SessionScope } from "../src/index.ts";
+import { displayPath, fuzzyScore, parseSession, parseSessionScope, rankSessions, resolveShortcut, SessionScope } from "../src/index.ts";
 
 test("parseSession extracts latest name and first user prompt", () => {
   const session = parseSession("/tmp/session.jsonl", [
@@ -19,6 +19,11 @@ test("rankSessions matches across name, cwd, and prompt", () => {
   ];
   assert.deepEqual(rankSessions(sessions, "checkout").map((item) => item.id), ["b"]);
   assert.deepEqual(rankSessions(sessions, "api").map((item) => item.id), ["a"]);
+});
+
+test("displayPath follows the configured Fish-style compact home path", () => {
+  assert.equal(displayPath("/Users/chenyuanning/sources/pi-session-manager"), "~/s/pi-session-manager");
+  assert.equal(displayPath("/Users/chenyuanning/astratech/payby/terraform/payby-terraform-azure"), "~/a/p/t/payby-terraform-azure");
 });
 
 test("fuzzy matching and shortcut configuration behave predictably", () => {

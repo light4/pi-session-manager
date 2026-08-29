@@ -74,6 +74,17 @@ export function resolveShortcut(config: Config, environmentShortcut?: string): K
   return typeof shortcut === "string" && shortcut.trim() ? shortcut.trim() as KeyId : DEFAULT_SHORTCUT;
 }
 
+/** Mirror Fish/Starship's compact PWD style: ~/sources/project becomes ~/s/project. */
+export function displayPath(path: string): string {
+  const home = homedir();
+  if (path === home) return "~";
+  if (!path.startsWith(`${home}/`)) return path;
+  const parts = path.slice(home.length + 1).split("/").filter(Boolean);
+  if (parts.length === 0) return "~";
+  if (parts.length === 1) return `~/${parts[0]}`;
+  return `~/${parts.slice(0, -1).map((part) => part[0]).join("/")}/${parts.at(-1)}`;
+}
+
 export function fuzzyScore(candidate: string, query: string): number | undefined {
   const haystack = candidate.toLowerCase();
   let cursor = 0;
@@ -352,7 +363,7 @@ async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.L
     };
     let candidates = sessionsForScope(); let matches = candidates; let selectedIndex = 0; let selectList: SelectList;
     const createList = () => {
-      const items: SelectItem[] = matches.slice(0, 200).map((item) => ({ value: item.id, label: label(item), description: item.id.startsWith("open:") ? `${item.cwd} · ${item.id.slice(5)}` : item.cwd }));
+      const items: SelectItem[] = matches.slice(0, 200).map((item) => ({ value: item.id, label: label(item), description: item.id.startsWith("open:") ? `${displayPath(item.cwd)} · ${item.id.slice(5)}` : displayPath(item.cwd) }));
       selectList = new SelectList(items, 10, { selectedPrefix: (text) => theme.fg("accent", text), selectedText: (text) => theme.fg("accent", text), description: (text) => theme.fg("muted", text), scrollInfo: (text) => theme.fg("dim", text), noMatch: (text) => theme.fg("warning", text) });
       selectList.setSelectedIndex(selectedIndex);
     };
