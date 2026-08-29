@@ -1,10 +1,13 @@
 {
-  "name": "pi-session-manager",
-  "version": "0.2.10",
-  "private": true,
+  "name": "@light4/pi-session-manager",
+  "version": "0.2.11",
   "description": "Discover, switch, and resume Pi sessions across terminal emulators.",
   "type": "module",
   "keywords": ["pi-package", "pi-extension", "session-manager"],
+  "license": "MIT",
+  "repository": "github:light4/pi-session-manager",
+  "files": ["src"],
+  "publishConfig": { "access": "public" },
   "pi": { "extensions": ["./src/index.ts"] },
   "scripts": {
     "test": "tsx --test test/*.test.ts",
