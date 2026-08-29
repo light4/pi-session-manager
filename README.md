@@ -1,36 +1,50 @@
 # pi-session-manager
 
-A terminal-emulator-agnostic session switcher for [Pi](https://pi.dev). Ghostty is the first backend; Kitty, tmux, and Zellij can follow.
+A terminal-emulator-agnostic [Pi](https://pi.dev) extension to search, focus, and resume persisted Pi sessions. The first backend is **Ghostty on macOS**; its terminal-specific operations are isolated so Kitty, tmux, and Zellij backends can be added later.
 
-## Intended workflow
+## What it does
 
-1. Press a Ghostty shortcut to open `pi-session`.
-2. Search Pi sessions by name, project, prompt, or recency.
-3. Select a session:
-   - focus its existing terminal surface when it is active;
-   - otherwise create a terminal tab/window and resume it with `pi --session <path>`.
+- Press **Alt+S** or run `/sessions` from an idle Pi TUI.
+- Fuzzy-search every persisted Pi session by its name, project path, or first prompt.
+- Select a session:
+  - if it is already running in Ghostty, focus its existing tab/window;
+  - otherwise, make a Ghostty tab and launch `pi --session <session-file>` there.
+- Tracks live Pi session-to-TTY associations in
+  `~/.pi/agent/pi-session-manager.json`.
 
-Pi itself persists conversations under `~/.pi/agent/sessions/`. This project adds the missing runtime association between a Pi session and a Ghostty terminal.
+Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The registry is only a disposable cache used to associate a live Pi process with a Ghostty terminal. Stale entries are harmless: Ghostty is queried before a tab is focused, and a new tab is opened when no matching surface exists.
 
-## Design
+## Install
 
-- **Pi extension** records a session's ID, JSONL path, name, cwd, and terminal TTY in a local registry.
-- **Python CLI** indexes persisted Pi sessions and presents a searchable picker.
-- **Terminal backends** resolve and focus a terminal surface, or create one when no live surface exists. Ghostty uses its macOS AppleScript dictionary initially.
-- **Extensible integrations**: terminal-specific behavior is isolated behind a backend interface; Kitty, tmux, and Zellij can implement the same contract.
+```sh
+pi install git:github.com/light4/pi-session-manager@v0.2.0
+```
 
-The registry is only a convenience cache. Pi JSONL session files remain the source of truth for session metadata.
+Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.
+
+The global shortcut is configurable in `~/.pi/agent/pi-session-manager-config.json`:
+
+```json
+{ "shortcut": "ctrl+shift+s" }
+```
+
+For a one-off override:
+
+```sh
+PI_SESSION_MANAGER_SHORTCUT=ctrl+shift+s pi
+```
+
+## Limitations
+
+- This release implements Ghostty/macOS only. It intentionally does not require tmux.
+- A Pi session started with `--no-session` cannot be found or resumed.
+- The command needs Pi's interactive TUI; it does nothing useful in print/JSON/RPC mode.
+- A session opened outside Ghostty is searchable and can be resumed into Ghostty, but cannot be focused in its original terminal.
 
 ## Development
 
-```bash
-uv sync
-uv run ruff check .
-uv run ruff format . --check
-uv run ty check
-uv run pytest
+```sh
+npm install
+npm run typecheck
+npm test
 ```
-
-## Status
-
-Project scaffold. The next milestone is a read-only `pi-session list` command that discovers and searches Pi's JSONL sessions; Ghostty is the first focus/resume backend.
