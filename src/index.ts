@@ -32,6 +32,20 @@ interface RegistryRecord {
 interface Registry { records: RegistryRecord[] }
 interface Config { shortcut?: string }
 
+interface GhosttyTerminal {
+  tty: string;
+  pid: string;
+  name: string;
+  cwd: string;
+}
+
+interface OpenSessionItem extends SessionItem {
+  /** Synthetic picker ID; the underlying Pi session ID is optional. */
+  sessionId?: string;
+  tty: string;
+  terminalOnly: boolean;
+}
+
 export enum SessionScope {
   Live = "live",
   Closed = "closed",
@@ -247,15 +261,70 @@ async function unregisterCurrentSession(ctx: ExtensionContext): Promise<void> {
 
 function label(session: SessionItem): string { return session.name ?? session.prompt?.replace(/\s+/g, " ") ?? basename(session.file); }
 
-/** Return sessions whose registered TTY still belongs to a live Ghostty surface. */
-async function liveSessions(sessions: SessionItem[]): Promise<SessionItem[]> {
-  const registry = await loadRegistry();
-  const liveRecords = (await Promise.all(registry.records.map(async (record) =>
-    (await ghosttyHasTty(record.tty)) ? record : undefined,
-  ))).filter((record): record is RegistryRecord => record !== undefined);
+async function cwdForProcess(pid: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync("lsof", ["-a", "-p", pid, "-d", "cwd", "-Fn"]);
+    return stdout.split("\n").find((line) => line.startsWith("n"))?.slice(1);
+  } catch { return undefined; }
+}
+
+/** Discover Ghostty surfaces whose foreground process is Pi, even if they have not loaded this extension. */
+async function ghosttyPiTerminals(): Promise<GhosttyTerminal[]> {
+  const script = `tell application "Ghostty"
+set rows to {}
+repeat with theWindow in windows
+ repeat with theTab in tabs of theWindow
+  repeat with theTerminal in terminals of theTab
+   set end of rows to ((tty of theTerminal) as text) & (ASCII character 9) & ((pid of theTerminal) as text) & (ASCII character 9) & ((name of theTerminal) as text)
+  end repeat
+ end repeat
+end repeat
+set AppleScript's text item delimiters to linefeed
+return rows as text
+end tell`;
+  let stdout: string;
+  try { ({ stdout } = await execFileAsync("osascript", ["-e", script])); } catch { return []; }
+  const surfaces = stdout.trim().split("\n").map((line) => line.split("\t")).filter((row) => row.length === 3);
+  const terminals = await Promise.all(surfaces.map(async ([tty, pid, name]) => {
+    try {
+      const { stdout: command } = await execFileAsync("ps", ["-o", "command=", "-p", pid!]);
+      if (!/(^|\/)pi(?:\s|$)/.test(command.trim())) return undefined;
+      const cwd = await cwdForProcess(pid!);
+      return cwd ? { tty: tty!, pid: pid!, name: name!, cwd } : undefined;
+    } catch { return undefined; }
+  }));
+  return terminals.filter((terminal): terminal is GhosttyTerminal => terminal !== undefined);
+}
+
+/**
+ * Pair every live Ghostty Pi terminal with a session when it has registered,
+ * while retaining unregistered terminals as focus-only picker entries.
+ */
+async function liveSessions(sessions: SessionItem[]): Promise<OpenSessionItem[]> {
+  const [registry, terminals] = await Promise.all([loadRegistry(), ghosttyPiTerminals()]);
+  const terminalTtys = new Set(terminals.map((terminal) => terminal.tty));
+  const liveRecords = registry.records.filter((record) => terminalTtys.has(record.tty));
   if (liveRecords.length !== registry.records.length) await saveRegistry({ records: liveRecords });
-  const ids = new Set(liveRecords.map((record) => record.sessionId));
-  return sessions.filter((session) => ids.has(session.id));
+  const recordsByTty = new Map<string, RegistryRecord>();
+  for (const record of liveRecords.sort((a, b) => b.updatedAt - a.updatedAt)) {
+    if (!recordsByTty.has(record.tty)) recordsByTty.set(record.tty, record);
+  }
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  return terminals.map((terminal) => {
+    const record = recordsByTty.get(terminal.tty);
+    const session = record && sessionsById.get(record.sessionId);
+    if (session) return { ...session, id: `open:${terminal.tty}`, sessionId: session.id, tty: terminal.tty, terminalOnly: false };
+    return {
+      id: `open:${terminal.tty}`,
+      file: "",
+      cwd: terminal.cwd,
+      name: `Unregistered Pi · ${terminal.name || terminal.cwd.split("/").pop()}`,
+      prompt: undefined,
+      updatedAt: 0,
+      tty: terminal.tty,
+      terminalOnly: true,
+    };
+  });
 }
 
 async function activateSession(session: SessionItem, ctx: ExtensionContext): Promise<void> {
@@ -272,7 +341,7 @@ async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.L
   const sessions = await listSessions();
   if (!sessions.length) { ctx.ui.notify("No persisted Pi sessions found.", "info"); return; }
   const live = await liveSessions(sessions);
-  const liveIds = new Set(live.map((session) => session.id));
+  const liveIds = new Set(live.flatMap((session) => session.sessionId ? [session.sessionId] : []));
   const closed = sessions.filter((session) => !liveIds.has(session.id));
   const selected = await ctx.ui.custom<string | null>((tui, theme, _keys, done) => {
     const input = new Input(); const container = new Container(); let scope = initialScope;
@@ -283,7 +352,7 @@ async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.L
     };
     let candidates = sessionsForScope(); let matches = candidates; let selectedIndex = 0; let selectList: SelectList;
     const createList = () => {
-      const items: SelectItem[] = matches.slice(0, 200).map((item) => ({ value: item.id, label: label(item), description: item.cwd }));
+      const items: SelectItem[] = matches.slice(0, 200).map((item) => ({ value: item.id, label: label(item), description: item.id.startsWith("open:") ? `${item.cwd} · ${item.id.slice(5)}` : item.cwd }));
       selectList = new SelectList(items, 10, { selectedPrefix: (text) => theme.fg("accent", text), selectedText: (text) => theme.fg("accent", text), description: (text) => theme.fg("muted", text), scrollInfo: (text) => theme.fg("dim", text), noMatch: (text) => theme.fg("warning", text) });
       selectList.setSelectedIndex(selectedIndex);
     };
@@ -298,7 +367,19 @@ async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.L
       handleInput(data: string) { if (matchesKey(data, Key.ctrlShift("a"))) toggleScope(); else if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
     };
   }, { overlay: true, overlayOptions: { width: "80%", minWidth: 45, maxHeight: "70%" } });
-  const session = selected === null ? undefined : sessions.find((item) => item.id === selected);
+  if (selected === null) return;
+  const liveTarget = live.find((item) => item.id === selected);
+  if (liveTarget) {
+    if (await focusGhostty(liveTarget.tty)) {
+      ctx.ui.notify(`Focused: ${label(liveTarget)}`, "info");
+      return;
+    }
+    const session = liveTarget.sessionId ? sessions.find((item) => item.id === liveTarget.sessionId) : undefined;
+    if (session) await activateSession(session, ctx);
+    else ctx.ui.notify("That Ghostty Pi terminal has closed.", "warning");
+    return;
+  }
+  const session = sessions.find((item) => item.id === selected);
   if (session) await activateSession(session, ctx);
 }
 

@@ -5,7 +5,7 @@ A terminal-emulator-agnostic [Pi](https://pi.dev) extension to search, focus, an
 ## What it does
 
 - Press **Ctrl+Shift+S** or run `/sessions` from an idle Pi TUI. On macOS that is the physical Control + Shift + S keys — not Command + Shift + S.
-- The default picker scope is **live sessions only**: every Pi session currently open in Ghostty and registered by this extension.
+- The default picker scope is **live Ghostty Pi terminals**. Registered terminals show their exact Pi session; tabs that were opened before the extension was loaded are listed as `Unregistered Pi · <tab title>` and are still focusable.
 - Press **Ctrl+Shift+A** to cycle the picker through open, **closed**, and **all persisted** sessions. `/sessions closed` opens directly in the closed-session scope; `/sessions all` opens directly in the all-session scope.
 - Fuzzy-search the current scope by session name, project path, or first prompt.
 - Select a session:
@@ -14,12 +14,12 @@ A terminal-emulator-agnostic [Pi](https://pi.dev) extension to search, focus, an
 - Tracks live Pi session-to-TTY associations in
   `~/.pi/agent/pi-session-manager.json`.
 
-Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The registry is only a disposable cache used to associate a live Pi process with a Ghostty terminal. Stale entries are harmless: Ghostty is queried before a tab is focused, and a new tab is opened when no matching surface exists.
+Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The registry is only a disposable cache used to associate a live Pi process with a Ghostty terminal. The extension also enumerates Ghostty terminal PIDs to include unregistered Pi tabs as focus-only entries. Stale entries are harmless: Ghostty is queried before a tab is focused, and a new tab is opened when no matching surface exists.
 
 ## Install
 
 ```sh
-pi install git:github.com/light4/pi-session-manager@v0.2.3
+pi install git:github.com/light4/pi-session-manager@v0.2.5
 ```
 
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.
