@@ -244,26 +244,29 @@ async function activateSession(session: SessionItem, ctx: ExtensionContext): Pro
   catch (error) { ctx.ui.notify(`Unable to open Ghostty: ${error instanceof Error ? error.message : String(error)}`, "error"); }
 }
 
-async function showSessions(ctx: ExtensionContext, initialScope: "live" | "all" = "live"): Promise<void> {
+async function showSessions(ctx: ExtensionContext, initialScope: "live" | "closed" | "all" = "live"): Promise<void> {
   if (ctx.mode !== "tui") { ctx.ui.notify("/sessions requires Pi's interactive TUI.", "warning"); return; }
   const sessions = await listSessions();
   if (!sessions.length) { ctx.ui.notify("No persisted Pi sessions found.", "info"); return; }
   const live = await liveSessions(sessions);
+  const liveIds = new Set(live.map((session) => session.id));
+  const closed = sessions.filter((session) => !liveIds.has(session.id));
   const selected = await ctx.ui.custom<string | null>((tui, theme, _keys, done) => {
     const input = new Input(); const container = new Container(); let scope = initialScope;
-    let candidates = scope === "live" ? live : sessions; let matches = candidates; let selectedIndex = 0; let selectList: SelectList;
+    const sessionsForScope = () => scope === "live" ? live : scope === "closed" ? closed : sessions;
+    let candidates = sessionsForScope(); let matches = candidates; let selectedIndex = 0; let selectList: SelectList;
     const createList = () => {
       const items: SelectItem[] = matches.slice(0, 200).map((item) => ({ value: item.id, label: label(item), description: item.cwd }));
       selectList = new SelectList(items, 10, { selectedPrefix: (text) => theme.fg("accent", text), selectedText: (text) => theme.fg("accent", text), description: (text) => theme.fg("muted", text), scrollInfo: (text) => theme.fg("dim", text), noMatch: (text) => theme.fg("warning", text) });
       selectList.setSelectedIndex(selectedIndex);
     };
     const refresh = () => { matches = rankSessions(candidates, input.getValue()); selectedIndex = 0; createList(); };
-    const toggleScope = () => { scope = scope === "live" ? "all" : "live"; candidates = scope === "live" ? live : sessions; refresh(); };
+    const toggleScope = () => { scope = scope === "live" ? "closed" : scope === "closed" ? "all" : "live"; candidates = sessionsForScope(); refresh(); };
     const move = (delta: number) => { if (matches.length) { selectedIndex = (selectedIndex + delta + matches.length) % matches.length; selectList.setSelectedIndex(selectedIndex); } };
     createList();
     return {
       get focused() { return input.focused; }, set focused(value: boolean) { input.focused = value; },
-      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === "live" ? `Open Pi sessions (${live.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • ctrl+shift+a all/open • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
+      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === "live" ? `Open Pi sessions (${live.length})` : scope === "closed" ? `Closed Pi sessions (${closed.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • ctrl+shift+a scope • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
       invalidate() { container.invalidate(); input.invalidate(); selectList.invalidate(); },
       handleInput(data: string) { if (matchesKey(data, Key.ctrlShift("a"))) toggleScope(); else if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
     };
@@ -277,5 +280,5 @@ export default function sessionManagerExtension(pi: ExtensionAPI): void {
   pi.on("session_info_changed", async (_event, ctx) => { await registerCurrentSession(ctx); });
   pi.on("session_shutdown", async (_event, ctx) => { await unregisterCurrentSession(ctx); });
   pi.registerShortcut(resolveShortcut(loadConfig(), process.env.PI_SESSION_MANAGER_SHORTCUT), { description: "Find and focus or resume a Pi session", handler: showSessions });
-  pi.registerCommand("sessions", { description: "Find live Pi sessions; pass 'all' to include history", handler: async (args, ctx) => showSessions(ctx, args.trim() === "all" ? "all" : "live") });
+  pi.registerCommand("sessions", { description: "Find Pi sessions; scopes: live (default), closed, all", handler: async (args, ctx) => showSessions(ctx, args.trim() === "all" ? "all" : args.trim() === "closed" ? "closed" : "live") });
 }
