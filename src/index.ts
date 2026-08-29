@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -12,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const REGISTRY_PATH = join(homedir(), CONFIG_DIR_NAME, "agent", "pi-session-manager.json");
 // Unlike Option/Alt, Ctrl+Shift is consistently forwarded by Ghostty on macOS.
 const DEFAULT_SHORTCUT = Key.ctrlShift("s");
+const AUTONAME_ACTION = "__pi_session_manager_autoname__";
 
 export interface SessionItem {
   id: string;
@@ -120,6 +122,23 @@ function textContent(content: unknown): string | undefined {
   return content.filter((block): block is { type: "text"; text: string } =>
     block !== null && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string",
   ).map((block) => block.text).join("\n").trim() || undefined;
+}
+
+function conversationForTitle(ctx: ExtensionContext): string {
+  const messages: string[] = [];
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type !== "message" || !["user", "assistant"].includes(entry.message.role)) continue;
+    const text = textContent((entry.message as { content?: unknown }).content);
+    if (text) messages.push(`${entry.message.role === "user" ? "User" : "Assistant"}: ${text}`);
+  }
+  const conversation = messages.join("\n\n");
+  return conversation.length > 12_000
+    ? `${conversation.slice(0, 6_000)}\n\n[...middle omitted...]\n\n${conversation.slice(-6_000)}`
+    : conversation;
+}
+
+function normalizeTitle(text: string): string {
+  return text.replace(/^["'“”‘’`\s]+|["'“”‘’`\s]+$/g, "").replace(/\s+/g, " ").slice(0, 80);
 }
 
 /** Parse a Pi JSONL file without loading it through Pi's session manager. */
@@ -347,7 +366,40 @@ async function activateSession(session: SessionItem, ctx: ExtensionContext): Pro
   catch (error) { ctx.ui.notify(`Unable to open Ghostty: ${error instanceof Error ? error.message : String(error)}`, "error"); }
 }
 
-async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.Live): Promise<void> {
+async function autonameCurrentSession(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  const conversation = conversationForTitle(ctx);
+  if (!conversation) { ctx.ui.notify("No conversation text available to name.", "warning"); return; }
+  if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
+    ctx.ui.notify("The current model is not available for autonaming.", "warning");
+    return;
+  }
+  ctx.ui.notify("Generating session name…", "info");
+  try {
+    const response = await ctx.modelRegistry.complete(ctx.model, {
+      messages: [{
+        role: "user",
+        content: [{ type: "text", text: [
+          "Create one concise 3–10 word title for this coding conversation.",
+          "Use the conversation's language. Describe the current goal or accomplished work.",
+          "Output only the title: no quotes, markdown, explanation, or trailing punctuation.",
+          "<conversation>", conversation, "</conversation>",
+        ].join("\n") }],
+        timestamp: Date.now(),
+      }],
+    }, { reasoningEffort: "minimal", cacheRetention: "none", sessionId: randomUUID() });
+    const title = normalizeTitle(response.content
+      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .map((block) => block.text).join("\n"));
+    if (!title) { ctx.ui.notify("The model did not return a usable session name.", "warning"); return; }
+    if (ctx.hasUI && !await ctx.ui.confirm("Rename current Pi session?", title)) return;
+    pi.setSessionName(title);
+    ctx.ui.notify(`Session renamed: ${title}`, "info");
+  } catch (error) {
+    ctx.ui.notify(`Unable to generate session name: ${error instanceof Error ? error.message : String(error)}`, "error");
+  }
+}
+
+async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.Live, onAutoname?: () => Promise<void>): Promise<void> {
   if (ctx.mode !== "tui") { ctx.ui.notify("/sessions requires Pi's interactive TUI.", "warning"); return; }
   const sessions = await listSessions();
   if (!sessions.length) { ctx.ui.notify("No persisted Pi sessions found.", "info"); return; }
@@ -373,12 +425,13 @@ async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.L
     createList();
     return {
       get focused() { return input.focused; }, set focused(value: boolean) { input.focused = value; },
-      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === SessionScope.Live ? `Open Pi sessions (${live.length})` : scope === SessionScope.Closed ? `Closed Pi sessions (${closed.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • ctrl+shift+a scope • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
+      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === SessionScope.Live ? `Open Pi sessions (${live.length})` : scope === SessionScope.Closed ? `Closed Pi sessions (${closed.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • ctrl+shift+a scope • ctrl+shift+n name current • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
       invalidate() { container.invalidate(); input.invalidate(); selectList.invalidate(); },
-      handleInput(data: string) { if (matchesKey(data, Key.ctrlShift("a"))) toggleScope(); else if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
+      handleInput(data: string) { if (matchesKey(data, Key.ctrlShift("a"))) toggleScope(); else if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.ctrlShift("n"))) done(AUTONAME_ACTION); else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
     };
   }, { overlay: true, overlayOptions: { width: "80%", minWidth: 45, maxHeight: "70%" } });
   if (selected === null) return;
+  if (selected === AUTONAME_ACTION) { await onAutoname?.(); return; }
   const liveTarget = live.find((item) => item.id === selected);
   if (liveTarget) {
     if (await focusGhostty(liveTarget.tty)) {
@@ -398,6 +451,8 @@ export default function sessionManagerExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => { await registerCurrentSession(ctx); });
   pi.on("session_info_changed", async (_event, ctx) => { await registerCurrentSession(ctx); });
   pi.on("session_shutdown", async (_event, ctx) => { await unregisterCurrentSession(ctx); });
-  pi.registerShortcut(resolveShortcut(loadConfig(), process.env.PI_SESSION_MANAGER_SHORTCUT), { description: "Find and focus or resume a Pi session", handler: showSessions });
-  pi.registerCommand("sessions", { description: "Find Pi sessions; scopes: live (default), closed, all", handler: async (args, ctx) => showSessions(ctx, parseSessionScope(args)) });
+  const autoname = async (ctx: ExtensionContext) => autonameCurrentSession(pi, ctx);
+  pi.registerShortcut(resolveShortcut(loadConfig(), process.env.PI_SESSION_MANAGER_SHORTCUT), { description: "Find and focus or resume a Pi session", handler: async (ctx) => showSessions(ctx, SessionScope.Live, () => autoname(ctx)) });
+  pi.registerCommand("sessions", { description: "Find Pi sessions; scopes: live (default), closed, all", handler: async (args, ctx) => showSessions(ctx, parseSessionScope(args), () => autoname(ctx)) });
+  pi.registerCommand("autoname", { description: "Generate a new name for the current session from its chat history", handler: async (_args, ctx) => autoname(ctx) });
 }

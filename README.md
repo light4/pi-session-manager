@@ -11,6 +11,7 @@ A terminal-emulator-agnostic [Pi](https://pi.dev) extension to search, focus, an
 - Select a session:
   - a live session focuses its existing Ghostty tab/window;
   - a historical session makes a Ghostty tab and launches `pi --session <session-file>` there.
+- Run `/autoname` to generate a real Pi session name from the active branch's chat history. The picker also exposes this action as **Ctrl+Shift+N**; it always renames the Pi session hosting the picker, not the highlighted session.
 - Tracks live Pi session-to-TTY associations in
   `~/.pi/agent/pi-session-manager.json`.
 
@@ -19,7 +20,7 @@ Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The regi
 ## Install
 
 ```sh
-pi install git:github.com/light4/pi-session-manager@v0.2.6
+pi install git:github.com/light4/pi-session-manager@v0.2.7
 ```
 
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.
