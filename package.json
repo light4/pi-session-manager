@@ -3,17 +3,34 @@
   "version": "0.2.11",
   "description": "Discover, switch, and resume Pi sessions across terminal emulators.",
   "type": "module",
-  "keywords": ["pi-package", "pi-extension", "session-manager"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "session-manager"
+  ],
   "license": "MIT",
-  "repository": "github:light4/pi-session-manager",
-  "files": ["src"],
-  "publishConfig": { "access": "public" },
-  "pi": { "extensions": ["./src/index.ts"] },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/light4/pi-session-manager.git"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
   "scripts": {
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
