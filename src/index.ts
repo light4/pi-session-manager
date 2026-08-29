@@ -140,6 +140,26 @@ async function currentTty(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
+async function ghosttyHasTty(tty: string): Promise<boolean> {
+  const script = `on run argv
+set targetTTY to item 1 of argv
+tell application "Ghostty"
+ repeat with theWindow in windows
+  repeat with theTab in tabs of theWindow
+   repeat with theTerminal in terminals of theTab
+    if (tty of theTerminal) is targetTTY then return "found"
+   end repeat
+  end repeat
+ end repeat
+end tell
+return "not-found"
+end run`;
+  try {
+    const { stdout } = await execFileAsync("osascript", ["-e", script, tty]);
+    return stdout.trim() === "found";
+  } catch { return false; }
+}
+
 async function focusGhostty(tty: string): Promise<boolean> {
   const script = `on run argv
 set targetTTY to item 1 of argv
@@ -202,6 +222,18 @@ async function unregisterCurrentSession(ctx: ExtensionContext): Promise<void> {
 }
 
 function label(session: SessionItem): string { return session.name ?? session.prompt?.replace(/\s+/g, " ") ?? basename(session.file); }
+
+/** Return sessions whose registered TTY still belongs to a live Ghostty surface. */
+async function liveSessions(sessions: SessionItem[]): Promise<SessionItem[]> {
+  const registry = await loadRegistry();
+  const liveRecords = (await Promise.all(registry.records.map(async (record) =>
+    (await ghosttyHasTty(record.tty)) ? record : undefined,
+  ))).filter((record): record is RegistryRecord => record !== undefined);
+  if (liveRecords.length !== registry.records.length) await saveRegistry({ records: liveRecords });
+  const ids = new Set(liveRecords.map((record) => record.sessionId));
+  return sessions.filter((session) => ids.has(session.id));
+}
+
 async function activateSession(session: SessionItem, ctx: ExtensionContext): Promise<void> {
   const registry = await loadRegistry();
   for (const record of registry.records.filter((item) => item.sessionId === session.id).sort((a, b) => b.updatedAt - a.updatedAt)) {
@@ -211,25 +243,28 @@ async function activateSession(session: SessionItem, ctx: ExtensionContext): Pro
   catch (error) { ctx.ui.notify(`Unable to open Ghostty: ${error instanceof Error ? error.message : String(error)}`, "error"); }
 }
 
-async function showSessions(ctx: ExtensionContext): Promise<void> {
+async function showSessions(ctx: ExtensionContext, initialScope: "live" | "all" = "live"): Promise<void> {
   if (ctx.mode !== "tui") { ctx.ui.notify("/sessions requires Pi's interactive TUI.", "warning"); return; }
   const sessions = await listSessions();
   if (!sessions.length) { ctx.ui.notify("No persisted Pi sessions found.", "info"); return; }
+  const live = await liveSessions(sessions);
   const selected = await ctx.ui.custom<string | null>((tui, theme, _keys, done) => {
-    const input = new Input(); const container = new Container(); let matches = sessions; let selectedIndex = 0; let selectList: SelectList;
+    const input = new Input(); const container = new Container(); let scope = initialScope;
+    let candidates = scope === "live" ? live : sessions; let matches = candidates; let selectedIndex = 0; let selectList: SelectList;
     const createList = () => {
       const items: SelectItem[] = matches.slice(0, 200).map((item) => ({ value: item.id, label: label(item), description: item.cwd }));
       selectList = new SelectList(items, 10, { selectedPrefix: (text) => theme.fg("accent", text), selectedText: (text) => theme.fg("accent", text), description: (text) => theme.fg("muted", text), scrollInfo: (text) => theme.fg("dim", text), noMatch: (text) => theme.fg("warning", text) });
       selectList.setSelectedIndex(selectedIndex);
     };
-    const refresh = () => { matches = rankSessions(sessions, input.getValue()); selectedIndex = 0; createList(); };
+    const refresh = () => { matches = rankSessions(candidates, input.getValue()); selectedIndex = 0; createList(); };
+    const toggleScope = () => { scope = scope === "live" ? "all" : "live"; candidates = scope === "live" ? live : sessions; refresh(); };
     const move = (delta: number) => { if (matches.length) { selectedIndex = (selectedIndex + delta + matches.length) % matches.length; selectList.setSelectedIndex(selectedIndex); } };
     createList();
     return {
       get focused() { return input.focused; }, set focused(value: boolean) { input.focused = value; },
-      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold("Pi sessions")), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
+      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === "live" ? `Open Pi sessions (${live.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • alt+a all/open • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
       invalidate() { container.invalidate(); input.invalidate(); selectList.invalidate(); },
-      handleInput(data: string) { if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
+      handleInput(data: string) { if (matchesKey(data, Key.alt("a"))) toggleScope(); else if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
     };
   }, { overlay: true, overlayOptions: { width: "80%", minWidth: 45, maxHeight: "70%" } });
   const session = selected === null ? undefined : sessions.find((item) => item.id === selected);
@@ -241,5 +276,5 @@ export default function sessionManagerExtension(pi: ExtensionAPI): void {
   pi.on("session_info_changed", async (_event, ctx) => { await registerCurrentSession(ctx); });
   pi.on("session_shutdown", async (_event, ctx) => { await unregisterCurrentSession(ctx); });
   pi.registerShortcut(resolveShortcut(loadConfig(), process.env.PI_SESSION_MANAGER_SHORTCUT), { description: "Find and focus or resume a Pi session", handler: showSessions });
-  pi.registerCommand("sessions", { description: "Find and focus or resume a Pi session in Ghostty", handler: async (_args, ctx) => showSessions(ctx) });
+  pi.registerCommand("sessions", { description: "Find live Pi sessions; pass 'all' to include history", handler: async (args, ctx) => showSessions(ctx, args.trim() === "all" ? "all" : "live") });
 }
