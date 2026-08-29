@@ -4,9 +4,9 @@ A terminal-emulator-agnostic [Pi](https://pi.dev) extension to search, focus, an
 
 ## What it does
 
-- Press **Alt+S** or run `/sessions` from an idle Pi TUI.
+- Press **Ctrl+Shift+S** or run `/sessions` from an idle Pi TUI. On macOS that is the physical Control + Shift + S keys — not Command + Shift + S.
 - The default picker scope is **live sessions only**: every Pi session currently open in Ghostty and registered by this extension.
-- Press **Alt+A** to toggle the picker between open sessions and **all persisted sessions**. `/sessions all` opens directly in the all-session scope.
+- Press **Ctrl+Shift+A** to toggle the picker between open sessions and **all persisted sessions**. `/sessions all` opens directly in the all-session scope.
 - Fuzzy-search the current scope by session name, project path, or first prompt.
 - Select a session:
   - a live session focuses its existing Ghostty tab/window;
@@ -19,7 +19,7 @@ Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The regi
 ## Install
 
 ```sh
-pi install git:github.com/light4/pi-session-manager@v0.2.1
+pi install git:github.com/light4/pi-session-manager@v0.2.2
 ```
 
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.

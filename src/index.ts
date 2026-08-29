@@ -10,7 +10,8 @@ import { Container, Input, Key, type KeyId, type SelectItem, SelectList, Text, m
 
 const execFileAsync = promisify(execFile);
 const REGISTRY_PATH = join(homedir(), CONFIG_DIR_NAME, "agent", "pi-session-manager.json");
-const DEFAULT_SHORTCUT = Key.alt("s");
+// Unlike Option/Alt, Ctrl+Shift is consistently forwarded by Ghostty on macOS.
+const DEFAULT_SHORTCUT = Key.ctrlShift("s");
 
 export interface SessionItem {
   id: string;
@@ -262,9 +263,9 @@ async function showSessions(ctx: ExtensionContext, initialScope: "live" | "all" 
     createList();
     return {
       get focused() { return input.focused; }, set focused(value: boolean) { input.focused = value; },
-      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === "live" ? `Open Pi sessions (${live.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • alt+a all/open • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
+      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === "live" ? `Open Pi sessions (${live.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • ctrl+shift+a all/open • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
       invalidate() { container.invalidate(); input.invalidate(); selectList.invalidate(); },
-      handleInput(data: string) { if (matchesKey(data, Key.alt("a"))) toggleScope(); else if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
+      handleInput(data: string) { if (matchesKey(data, Key.ctrlShift("a"))) toggleScope(); else if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
     };
   }, { overlay: true, overlayOptions: { width: "80%", minWidth: 45, maxHeight: "70%" } });
   const session = selected === null ? undefined : sessions.find((item) => item.id === selected);

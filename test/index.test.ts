@@ -25,5 +25,5 @@ test("fuzzy matching and shortcut configuration behave predictably", () => {
   assert.notEqual(fuzzyScore("Pi session manager", "psm"), undefined);
   assert.equal(fuzzyScore("Pi session manager", "smp"), undefined);
   assert.equal(resolveShortcut({ shortcut: "ctrl+shift+s" }), "ctrl+shift+s");
-  assert.equal(resolveShortcut({ shortcut: "" }), "alt+s");
+  assert.equal(resolveShortcut({ shortcut: "" }), "ctrl+shift+s");
 });
