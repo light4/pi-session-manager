@@ -19,6 +19,14 @@ Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The regi
 
 ## Install
 
+Install the tagged release from GitHub:
+
+```sh
+pi install git:github.com/light4/pi-session-manager@v0.2.11
+```
+
+Or, after the corresponding npm release is available, install it from npm:
+
 ```sh
 pi install npm:@light4/pi-session-manager@0.2.11
 ```
