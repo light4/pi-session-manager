@@ -400,14 +400,16 @@ async function autonameSession(pi: ExtensionAPI, ctx: ExtensionContext, target?:
       messages: [{
         role: "user",
         content: [{ type: "text", text: [
-          "Create one concise 3–10 word title for this coding conversation.",
-          "Use the conversation's language. Describe the current goal or accomplished work.",
+          "Create one concise but specific title for this coding conversation.",
+          "Use the conversation's language and describe the current goal or accomplished work.",
+          "Preserve the meaningful ticket/request prefix and central proper nouns exactly, including system, service, product, region, and acronym identifiers. Do not omit a central identifier merely to shorten the title.",
+          "Aim for 12–30 Chinese characters or 5–15 English words; use more when needed for clarity (hard maximum: 80 characters).",
           "Output only the title: no quotes, markdown, explanation, or trailing punctuation.",
           "<conversation>", conversation, "</conversation>",
         ].join("\n") }],
         timestamp: Date.now(),
       }],
-    }, { reasoningEffort: "minimal", cacheRetention: "none", sessionId: uuidv7() });
+    }, { reasoningEffort: "low", cacheRetention: "none", sessionId: uuidv7() });
     const title = normalizeTitle(response.content
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
       .map((block) => block.text).join("\n"));
