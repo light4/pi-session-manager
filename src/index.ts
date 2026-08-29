@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
+import { uuidv7 } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Input, Key, type KeyId, type SelectItem, SelectList, Text, matchesKey } from "@earendil-works/pi-tui";
 
@@ -386,7 +386,7 @@ async function autonameCurrentSession(pi: ExtensionAPI, ctx: ExtensionContext): 
         ].join("\n") }],
         timestamp: Date.now(),
       }],
-    }, { reasoningEffort: "minimal", cacheRetention: "none", sessionId: randomUUID() });
+    }, { reasoningEffort: "minimal", cacheRetention: "none", sessionId: uuidv7() });
     const title = normalizeTitle(response.content
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
       .map((block) => block.text).join("\n"));
