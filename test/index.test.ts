@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fuzzyScore, parseSession, rankSessions, resolveShortcut } from "../src/index.ts";
+import { fuzzyScore, parseSession, parseSessionScope, rankSessions, resolveShortcut, SessionScope } from "../src/index.ts";
 
 test("parseSession extracts latest name and first user prompt", () => {
   const session = parseSession("/tmp/session.jsonl", [
@@ -26,4 +26,6 @@ test("fuzzy matching and shortcut configuration behave predictably", () => {
   assert.equal(fuzzyScore("Pi session manager", "smp"), undefined);
   assert.equal(resolveShortcut({ shortcut: "ctrl+shift+s" }), "ctrl+shift+s");
   assert.equal(resolveShortcut({ shortcut: "" }), "ctrl+shift+s");
+  assert.equal(parseSessionScope("closed"), SessionScope.Closed);
+  assert.equal(parseSessionScope("unexpected"), SessionScope.Live);
 });
