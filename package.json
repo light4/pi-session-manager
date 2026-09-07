@@ -1,6 +1,6 @@
 {
   "name": "@light4/pi-session-manager",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "Discover, switch, and resume Pi sessions across terminal emulators.",
   "type": "module",
   "keywords": [
@@ -36,10 +36,10 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.84.3",
-    "@earendil-works/pi-coding-agent": "^0.84.3",
-    "@earendil-works/pi-tui": "^0.84.3",
-    "tsx": "^4.23.0",
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.0"
   }
 }
