@@ -22,13 +22,13 @@ Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The regi
 Install the tagged release from GitHub:
 
 ```sh
-pi install git:github.com/light4/pi-session-manager@v0.2.12
+pi install git:github.com/light4/pi-session-manager@v0.2.14
 ```
 
-Or, after the corresponding npm release is available, install it from npm:
+The npm registry currently has only v0.2.11 (without the latest autoname changes). To install that older version:
 
 ```sh
-pi install npm:@light4/pi-session-manager@0.2.12
+pi install npm:@light4/pi-session-manager@0.2.11
 ```
 
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.

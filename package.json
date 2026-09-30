@@ -1,6 +1,6 @@
 {
   "name": "@light4/pi-session-manager",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "description": "Discover, switch, and resume Pi sessions across terminal emulators.",
   "type": "module",
   "keywords": [
