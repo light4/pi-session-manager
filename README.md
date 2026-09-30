@@ -11,7 +11,7 @@ A terminal-emulator-agnostic [Pi](https://pi.dev) extension to search, focus, an
 - Select a session:
   - a live session focuses its existing Ghostty tab/window;
   - a historical session makes a Ghostty tab and launches `pi --session <session-file>` there.
-- Run `/autoname` to generate a real Pi session name from the active branch's chat history. It preserves central ticket prefixes and system/product/acronym identifiers, and targets a descriptive 12–30 Chinese-character or 5–15 English-word title. The picker also exposes this action as **Ctrl+Shift+N**; it generates a name for the highlighted registered session, including a closed historical session. Unregistered Ghostty terminals remain focus-only until their Pi process loads the extension.
+- Run `/autoname` to name a session from the active branch's verified facts, remaining TODOs, and project area (for example Pi 插件, DNS, or Nginx, inferred from the session directory and task). By default, it generates three one-sentence candidates: use ↑↓ to choose, then tweak and submit the selected `/name ...` command in Pi's editor. Set `autonameMode` to `direct` for a single candidate that is applied after confirmation. In the picker, **Ctrl+Shift+N** names the highlighted registered session; historical sessions use an edit dialog in the default mode because `/name` would rename the current session instead. Unregistered Ghostty terminals remain focus-only until their Pi process loads the extension.
 - Tracks live Pi session-to-TTY associations in
   `~/.pi/agent/pi-session-manager.json`.
 
@@ -33,11 +33,13 @@ pi install npm:@light4/pi-session-manager@0.2.12
 
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.
 
-The global shortcut is configurable in `~/.pi/agent/pi-session-manager-config.json`:
+Configure the shortcut and autoname behavior in `~/.pi/agent/pi-session-manager-config.json`:
 
 ```json
-{ "shortcut": "ctrl+shift+s" }
+{ "shortcut": "ctrl+shift+s", "autonameMode": "review" }
 ```
+
+`review` is the default (three candidates, edit before naming). Use `"autonameMode": "direct"` to generate one candidate and rename immediately after confirmation. The mode is read each time you run `/autoname` or use the picker.
 
 For a one-off override:
 

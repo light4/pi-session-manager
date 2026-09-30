@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 import { uuidv7 } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, DynamicBorder, SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, DynamicBorder, SessionManager, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Container, Input, Key, type KeyId, type SelectItem, SelectList, Text, matchesKey } from "@earendil-works/pi-tui";
 
 const execFileAsync = promisify(execFile);
@@ -32,7 +32,7 @@ interface RegistryRecord {
 }
 
 interface Registry { records: RegistryRecord[] }
-interface Config { shortcut?: string }
+interface Config { shortcut?: string; autonameMode?: "review" | "direct" }
 
 interface GhosttyTerminal {
   tty: string;
@@ -124,40 +124,21 @@ function textContent(content: unknown): string | undefined {
   ).map((block) => block.text).join("\n").trim() || undefined;
 }
 
-function conversationForTitle(ctx: ExtensionContext): string {
+export function conversationForTitle(branch: SessionEntry[]): string {
   const messages: string[] = [];
-  for (const entry of ctx.sessionManager.getBranch()) {
+  for (const entry of branch) {
     if (entry.type !== "message" || !["user", "assistant"].includes(entry.message.role)) continue;
     const text = textContent((entry.message as { content?: unknown }).content);
     if (text) messages.push(`${entry.message.role === "user" ? "User" : "Assistant"}: ${text}`);
   }
   const conversation = messages.join("\n\n");
   return conversation.length > 12_000
-    ? `${conversation.slice(0, 6_000)}\n\n[...middle omitted...]\n\n${conversation.slice(-6_000)}`
+    ? `${conversation.slice(0, 2_000)}\n\n[...middle omitted...]\n\n${conversation.slice(-10_000)}`
     : conversation;
 }
 
-async function conversationFromSessionFile(file: string): Promise<string> {
-  try {
-    const content = await readFile(file, "utf8");
-    const messages: string[] = [];
-    for (const line of content.split("\n")) {
-      try {
-        const entry = JSON.parse(line) as { type?: string; message?: { role?: string; content?: unknown } };
-        if (entry.type !== "message" || !entry.message || !["user", "assistant"].includes(entry.message.role ?? "")) continue;
-        const text = textContent(entry.message.content);
-        if (text) messages.push(`${entry.message.role === "user" ? "User" : "Assistant"}: ${text}`);
-      } catch { /* Ignore a partially written final JSONL record. */ }
-    }
-    const conversation = messages.join("\n\n");
-    return conversation.length > 12_000
-      ? `${conversation.slice(0, 6_000)}\n\n[...middle omitted...]\n\n${conversation.slice(-6_000)}`
-      : conversation;
-  } catch { return ""; }
-}
-
 function normalizeTitle(text: string): string {
-  return text.replace(/^["'“”‘’`\s]+|["'“”‘’`\s]+$/g, "").replace(/\s+/g, " ").slice(0, 80);
+  return text.replace(/^["'“”‘’`\s]+|["'“”‘’`\s]+$/g, "").replace(/\s+/g, " ");
 }
 
 /** Parse a Pi JSONL file without loading it through Pi's session manager. */
@@ -385,39 +366,68 @@ async function activateSession(session: SessionItem, ctx: ExtensionContext): Pro
   catch (error) { ctx.ui.notify(`Unable to open Ghostty: ${error instanceof Error ? error.message : String(error)}`, "error"); }
 }
 
-async function autonameSession(pi: ExtensionAPI, ctx: ExtensionContext, target?: SessionItem): Promise<void> {
+export async function autonameSession(pi: ExtensionAPI, ctx: ExtensionContext, target?: SessionItem, config: Config = loadConfig()): Promise<void> {
   const currentFile = ctx.sessionManager.getSessionFile();
   const isCurrentSession = !target || target.file === currentFile;
-  const conversation = isCurrentSession ? conversationForTitle(ctx) : await conversationFromSessionFile(target.file);
-  if (!conversation) { ctx.ui.notify("No conversation text available to name.", "warning"); return; }
-  if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
-    ctx.ui.notify("The current model is not available for autonaming.", "warning");
-    return;
-  }
-  ctx.ui.notify("Generating session name…", "info");
+  const direct = config.autonameMode === "direct";
+  if (!ctx.hasUI && !direct) { ctx.ui.notify("Autoname needs an interactive UI to choose a name.", "warning"); return; }
   try {
+    const conversation = conversationForTitle(isCurrentSession ? ctx.sessionManager.getBranch() : SessionManager.open(target.file).getBranch());
+    if (!conversation) { ctx.ui.notify("No conversation text available to name.", "warning"); return; }
+    const cwd = isCurrentSession ? ctx.sessionManager.getCwd() : target.cwd;
+    const repo = basename(cwd).toLowerCase();
+    const area = repo === "pi-session-manager" ? "Pi 插件" : repo === "dnsdb" ? "DNS" : repo.includes("nginx") ? "Nginx" : undefined;
+    if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
+      ctx.ui.notify("The current model is not available for autonaming.", "warning");
+      return;
+    }
+    ctx.ui.notify("Generating session name…", "info");
     const response = await ctx.modelRegistry.complete(ctx.model, {
       messages: [{
         role: "user",
         content: [{ type: "text", text: [
-          "Create one concise but specific title for this coding conversation.",
-          "Use the conversation's language and describe the current goal or accomplished work.",
-          "Preserve the meaningful ticket/request prefix and central proper nouns exactly, including system, service, product, region, and acronym identifiers. Do not omit a central identifier merely to shorten the title.",
-          "Aim for 12–30 Chinese characters or 5–15 English words; use more when needed for clarity (hard maximum: 80 characters).",
-          "Output only the title: no quotes, markdown, explanation, or trailing punctuation.",
+          `Suggest ${direct ? "one" : "three different"} short, one-sentence session ${direct ? "name" : "names"} in the conversation's language.`,
+          "Capture the main work and its current state: confirmed outcomes plus any meaningful next steps. Don't invent a TODO from a request to preview or rename this session.",
+          "Use the project area where helpful (pi-session-manager: Pi 插件; dnsdb: DNS; Nginx config: Ng/Nginx), and retain important ticket or service names.",
+          direct ? "Return just the name." : "Return three numbered lines (1. ..., 2. ..., 3. ...), nothing else.",
+          `Working directory: ${cwd}`,
+          ...(area ? [`Project area hint: ${area}`] : []),
           "<conversation>", conversation, "</conversation>",
         ].join("\n") }],
         timestamp: Date.now(),
       }],
     }, { reasoningEffort: "low", cacheRetention: "none", sessionId: uuidv7() });
-    const title = normalizeTitle(response.content
+    const text = response.content
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
-      .map((block) => block.text).join("\n"));
-    if (!title) { ctx.ui.notify("The model did not return a usable session name.", "warning"); return; }
-    if (ctx.hasUI && !await ctx.ui.confirm(`Rename ${isCurrentSession ? "current" : "selected"} Pi session?`, title)) return;
-    if (isCurrentSession) pi.setSessionName(title);
-    else (await SessionManager.open(target.file)).appendSessionInfo(title);
-    ctx.ui.notify(`Session renamed: ${title}`, "info");
+      .map((block) => block.text).join("\n");
+    if (direct) {
+      const title = normalizeTitle(text);
+      if (!title) { ctx.ui.notify("The model did not return a usable session name.", "warning"); return; }
+      if (ctx.hasUI && !await ctx.ui.confirm(`Rename ${isCurrentSession ? "current" : "selected"} Pi session?`, title)) return;
+      if (isCurrentSession) pi.setSessionName(title);
+      else SessionManager.open(target.file).appendSessionInfo(title);
+      ctx.ui.notify(`Session renamed: ${title}`, "info");
+      return;
+    }
+    const titles = [...new Set(text.split(/\r?\n/)
+      .map((line) => normalizeTitle(line.replace(/^\s*(?:\d+[.)、]|[-*])\s*/, "")))
+      .filter(Boolean))].slice(0, 3);
+    if (titles.length < 3) { ctx.ui.notify("The model did not return three distinct session names.", "warning"); return; }
+    const selected = await ctx.ui.select(`Choose a name for the ${isCurrentSession ? "current" : "selected"} session (↑↓):`, titles);
+    if (!selected) return;
+    if (isCurrentSession) {
+      if (ctx.ui.getEditorText().trim() && !await ctx.ui.confirm("Replace current draft?", "The editor contains unsent text.")) return;
+      ctx.ui.setEditorText(`/name ${selected}`);
+      ctx.ui.notify("Edit the /name command and press Enter to rename.", "info");
+    } else {
+      // /name always targets the current Pi session, not the highlighted historical session.
+      const edited = await ctx.ui.editor("Edit name for selected session", selected);
+      if (edited === undefined) return;
+      const title = normalizeTitle(edited);
+      if (!title) { ctx.ui.notify("Session name cannot be empty.", "warning"); return; }
+      SessionManager.open(target.file).appendSessionInfo(title);
+      ctx.ui.notify(`Session renamed: ${title}`, "info");
+    }
   } catch (error) {
     ctx.ui.notify(`Unable to generate session name: ${error instanceof Error ? error.message : String(error)}`, "error");
   }
@@ -449,7 +459,7 @@ async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.L
     createList();
     return {
       get focused() { return input.focused; }, set focused(value: boolean) { input.focused = value; },
-      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === SessionScope.Live ? `Open Pi sessions (${live.length})` : scope === SessionScope.Closed ? `Closed Pi sessions (${closed.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • ctrl+shift+a scope • ctrl+shift+n name current • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
+      render(width: number) { container.clear(); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); container.addChild(new Text(theme.fg("accent", theme.bold(scope === SessionScope.Live ? `Open Pi sessions (${live.length})` : scope === SessionScope.Closed ? `Closed Pi sessions (${closed.length})` : `All Pi sessions (${sessions.length})`)), 1, 0)); container.addChild(new Text(theme.fg("dim", "search name, project, or prompt:"), 1, 0)); container.addChild(input); container.addChild(selectList); container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter focus/open • ctrl+shift+a scope • ctrl+shift+n name selected • esc cancel"), 1, 0)); container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text))); return container.render(width); },
       invalidate() { container.invalidate(); input.invalidate(); selectList.invalidate(); },
       handleInput(data: string) { if (matchesKey(data, Key.ctrlShift("a"))) toggleScope(); else if (matchesKey(data, Key.up)) move(-1); else if (matchesKey(data, Key.down)) move(1); else if (matchesKey(data, Key.pageUp)) move(-10); else if (matchesKey(data, Key.pageDown)) move(10); else if (matchesKey(data, Key.ctrlShift("n"))) { const item = selectList.getSelectedItem(); if (item) done(`${AUTONAME_ACTION}:${item.value}`); } else if (matchesKey(data, Key.enter)) { const item = selectList.getSelectedItem(); if (item) done(item.value); } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) done(null); else { input.handleInput(data); refresh(); } tui.requestRender(); },
     };
@@ -483,7 +493,7 @@ export default function sessionManagerExtension(pi: ExtensionAPI): void {
   pi.on("session_info_changed", async (_event, ctx) => { await registerCurrentSession(ctx); });
   pi.on("session_shutdown", async (_event, ctx) => { await unregisterCurrentSession(ctx); });
   const autoname = async (ctx: ExtensionContext, session?: SessionItem) => autonameSession(pi, ctx, session);
-  pi.registerShortcut(resolveShortcut(loadConfig(), process.env.PI_SESSION_MANAGER_SHORTCUT), { description: "Find and focus or resume a Pi session", handler: async (ctx) => showSessions(ctx, SessionScope.Live, () => autoname(ctx)) });
-  pi.registerCommand("sessions", { description: "Find Pi sessions; scopes: live (default), closed, all", handler: async (args, ctx) => showSessions(ctx, parseSessionScope(args), () => autoname(ctx)) });
+  pi.registerShortcut(resolveShortcut(loadConfig(), process.env.PI_SESSION_MANAGER_SHORTCUT), { description: "Find and focus or resume a Pi session", handler: async (ctx) => showSessions(ctx, SessionScope.Live, (session) => autoname(ctx, session)) });
+  pi.registerCommand("sessions", { description: "Find Pi sessions; scopes: live (default), closed, all", handler: async (args, ctx) => showSessions(ctx, parseSessionScope(args), (session) => autoname(ctx, session)) });
   pi.registerCommand("autoname", { description: "Generate a new name for the current session from its chat history", handler: async (_args, ctx) => autoname(ctx) });
 }
