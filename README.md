@@ -1,6 +1,6 @@
 # pi-session-manager
 
-A terminal-emulator-agnostic [Pi](https://pi.dev) extension to search, focus, and resume persisted Pi sessions. The first backend is **Ghostty on macOS**; its terminal-specific operations are isolated so Kitty, tmux, and Zellij backends can be added later.
+A [Pi](https://pi.dev) extension to search, focus, and resume persisted Pi sessions in **Ghostty on macOS**.
 
 ## What it does
 
@@ -25,12 +25,6 @@ Install the tagged release from GitHub:
 pi install git:github.com/light4/pi-session-manager@v0.2.14
 ```
 
-The npm registry currently has only v0.2.11 (without the latest autoname changes). To install that older version:
-
-```sh
-pi install npm:@light4/pi-session-manager@0.2.11
-```
-
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.
 
 Configure the shortcut and autoname behavior in `~/.pi/agent/pi-session-manager-config.json`:
@@ -49,7 +43,7 @@ PI_SESSION_MANAGER_SHORTCUT=ctrl+shift+s pi
 
 ## Limitations
 
-- This release implements Ghostty/macOS only. It intentionally does not require tmux.
+- Only Ghostty on macOS is supported; tmux is not required.
 - A Pi session started with `--no-session` cannot be found or resumed.
 - The command needs Pi's interactive TUI; it does nothing useful in print/JSON/RPC mode.
 - A session opened outside Ghostty is searchable and can be resumed into Ghostty, but cannot be focused in its original terminal.
@@ -57,7 +51,7 @@ PI_SESSION_MANAGER_SHORTCUT=ctrl+shift+s pi
 ## Development
 
 ```sh
-npm install
-npm run typecheck
-npm test
+pnpm install
+pnpm run typecheck
+pnpm test
 ```
