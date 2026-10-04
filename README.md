@@ -22,7 +22,7 @@ Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The regi
 Install the tagged release from GitHub:
 
 ```sh
-pi install git:github.com/light4/pi-session-manager@v0.2.15
+pi install git:github.com/light4/pi-session-manager@v0.2.16
 ```
 
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.
