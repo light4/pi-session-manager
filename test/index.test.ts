@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -139,8 +139,8 @@ test("rankSessions matches across name, cwd, and prompt", () => {
 });
 
 test("displayPath follows the configured Fish-style compact home path", () => {
-  assert.equal(displayPath("/Users/chenyuanning/sources/pi-session-manager"), "~/s/pi-session-manager");
-  assert.equal(displayPath("/Users/chenyuanning/astratech/payby/terraform/payby-terraform-azure"), "~/a/p/t/payby-terraform-azure");
+  assert.equal(displayPath(join(homedir(), "sources/pi-session-manager")), "~/s/pi-session-manager");
+  assert.equal(displayPath(join(homedir(), "astratech/payby/terraform/payby-terraform-azure")), "~/a/p/t/payby-terraform-azure");
 });
 
 test("fuzzy matching and shortcut configuration behave predictably", () => {

@@ -55,3 +55,17 @@ pnpm install
 pnpm run typecheck
 pnpm test
 ```
+
+GitHub Actions runs typecheck, tests, and a package dry-run on pushes to `main` and pull requests. Unit tests do not exercise live Ghostty or Apple Events; terminal focus still needs manual testing on macOS.
+
+## Release
+
+Bump `package.json` and the install example above, commit, and push a matching `vX.Y.Z` tag. Publish a GitHub Release for that tag; [publish.yml](.github/workflows/publish.yml) verifies the version, runs checks, and publishes to npm with provenance via OIDC. Only the release publishing job has OIDC write permission; no npm token is stored in GitHub.
+
+One-time setup by the npm package owner (requires npm 11.19+ and 2FA):
+
+```sh
+npm trust github @light4/pi-session-manager --repo light4/pi-session-manager --file publish.yml --allow-publish --yes
+```
+
+If publishing fails, fix the cause and rerun the failed GitHub Actions job. Confirm both the GitHub Release and npm version before updating consumers.
