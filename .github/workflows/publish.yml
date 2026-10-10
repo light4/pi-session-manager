@@ -6,6 +6,12 @@ name: CI and npm publishing
   pull_request:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish (e.g. v0.3.0)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,36 +22,40 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name || github.sha }}
       - uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
       - name: Verify release version
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: node -e 'require("node:assert/strict").equal(process.env.RELEASE_TAG, `v${require("./package.json").version}`)'
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          node -e 'const assert = require("node:assert/strict"); assert.match(process.env.RELEASE_TAG, /^v\d+\.\d+\.\d+$/); assert.equal(process.env.RELEASE_TAG, `v${require("./package.json").version}`)'
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm test
       - run: npm pack --dry-run
 
   publish:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    concurrency: npm-${{ github.event.release.tag_name }}
+    concurrency: npm-${{ inputs.tag || github.event.release.tag_name }}
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           package-manager-cache: false
-      - run: npm publish --access public --provenance
+      - run: npm publish --access public --provenance --loglevel verbose

@@ -93,4 +93,14 @@ One-time setup by the npm package owner (requires npm 11.19+ and 2FA):
 npm trust github @light4/pi-session-manager --repo light4/pi-session-manager --file publish.yml --allow-publish --yes
 ```
 
-If publishing fails, fix the cause and rerun the failed GitHub Actions job. Confirm both the GitHub Release and npm version before updating consumers.
+If publishing fails, fix the cause and rerun the failed GitHub Actions job. When the
+workflow itself needs a fix, commit it to `main` and use the manual publishing entry
+point with the existing release tag (do not move published tags):
+
+```sh
+gh workflow run publish.yml --ref main -f tag=v0.3.0
+```
+
+Both checks and publishing use the selected tag. Publishing uses npm verbose logs
+to expose OIDC token retrieval/exchange failures without printing token values.
+Confirm both the GitHub Release and npm version before updating consumers.
