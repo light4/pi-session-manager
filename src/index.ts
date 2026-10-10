@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -10,7 +10,15 @@ import { CONFIG_DIR_NAME, DynamicBorder, SessionManager, type ExtensionAPI, type
 import { Container, Input, Key, type KeyId, type SelectItem, SelectList, Text, matchesKey } from "@earendil-works/pi-tui";
 
 const execFileAsync = promisify(execFile);
-const REGISTRY_PATH = join(homedir(), CONFIG_DIR_NAME, "agent", "pi-session-manager.json");
+// UUID records are retained; PID symlinks provide constant-time live lookup.
+const STATE_DIRECTORY = join(homedir(), CONFIG_DIR_NAME, "agent", "pi-session-manager");
+const LIVE_DIRECTORY = join(STATE_DIRECTORY, "live");
+const INDEX_DIRECTORY = join(STATE_DIRECTORY, "by-pid");
+const INSTANCE_ID = uuidv7();
+const LIVE_PATH = join(LIVE_DIRECTORY, `${INSTANCE_ID}.json`);
+const INDEX_PATH = join(INDEX_DIRECTORY, `${process.pid}.json`);
+let lastLiveRecord: RegistryRecord | undefined;
+let liveWriteQueue: Promise<void> = Promise.resolve();
 // Unlike Option/Alt, Ctrl+Shift is consistently forwarded by Ghostty on macOS.
 const DEFAULT_SHORTCUT = Key.ctrlShift("s");
 const AUTONAME_ACTION = "__pi_session_manager_autoname__";
@@ -25,14 +33,18 @@ export interface SessionItem {
 }
 
 interface RegistryRecord {
+  version: 1;
+  instanceId: string;
+  active: boolean;
+  pid: number;
+  cwd: string;
   sessionId: string;
   sessionFile: string;
   tty: string;
   updatedAt: number;
 }
 
-interface Registry { records: RegistryRecord[] }
-interface Config { shortcut?: string; autonameMode?: "review" | "direct" }
+interface Config { shortcut?: string; autonameMode?: "review" | "direct"; stateRetentionDays?: number }
 
 interface GhosttyTerminal {
   tty: string;
@@ -188,21 +200,78 @@ function loadConfig(): Config {
 }
 function requireText(path: string): string { return readFileSync(path, "utf8"); }
 
-async function loadRegistry(): Promise<Registry> {
+async function cleanupRetainedStates(config: Config = loadConfig()): Promise<void> {
+  const days = config.stateRetentionDays ?? 90;
+  if (!Number.isFinite(days) || days <= 0) throw new Error("stateRetentionDays must be a positive number");
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  let files;
   try {
-    const value: unknown = JSON.parse(await readFile(REGISTRY_PATH, "utf8"));
-    if (value && typeof value === "object" && Array.isArray((value as Registry).records)) return value as Registry;
-  } catch { /* first run or malformed cache */ }
-  return { records: [] };
+    files = await readdir(LIVE_DIRECTORY, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const file of files) {
+    // Never follow symlinks or delete unrelated files, transcripts or PID indexes.
+    if (!file.isFile() || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/i.test(file.name)) continue;
+    const path = join(LIVE_DIRECTORY, file.name);
+    try {
+      const stats = await stat(path);
+      if (stats.mtimeMs >= cutoff) continue;
+      let record: Partial<RegistryRecord>;
+      try { record = JSON.parse(await readFile(path, "utf8")) as Partial<RegistryRecord>; }
+      catch (error) {
+        if (error instanceof SyntaxError) continue;
+        throw error;
+      }
+      if (!record || record.version !== 1 || `${record.instanceId}.json` !== file.name ||
+          typeof record.updatedAt !== "number" || record.updatedAt >= cutoff) continue;
+      if (record.active !== false) {
+        if (!Number.isSafeInteger(record.pid) || (record.pid ?? 0) <= 0) continue;
+        try { process.kill(record.pid!, 0); continue; } catch (error) {
+          // EPERM or any unexpected error is not proof that the process is dead.
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+        }
+      }
+      // A different process may have refreshed the record while it was read.
+      if ((await stat(path)).mtimeMs !== stats.mtimeMs) continue;
+      await unlink(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
 }
-async function saveRegistry(registry: Registry): Promise<void> {
-  const temporary = `${REGISTRY_PATH}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, REGISTRY_PATH);
+
+async function loadLiveRecords(): Promise<RegistryRecord[]> {
+  let files: string[];
+  try {
+    files = await readdir(INDEX_DIRECTORY);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const records: RegistryRecord[] = [];
+  for (const file of files) {
+    if (!/^\d+\.json$/.test(file)) continue;
+    try {
+      const record = JSON.parse(await readFile(join(INDEX_DIRECTORY, file), "utf8")) as RegistryRecord;
+      if (record.version !== 1 || record.active !== true || typeof record.instanceId !== "string" ||
+          !Number.isSafeInteger(record.pid) || record.pid <= 0 ||
+          file !== `${record.pid}.json` || typeof record.tty !== "string" ||
+          typeof record.sessionId !== "string" || typeof record.sessionFile !== "string" ||
+          typeof record.cwd !== "string" || !Number.isFinite(record.updatedAt)) continue;
+      try { process.kill(record.pid, 0); } catch { continue; }
+      records.push(record);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) continue;
+      throw error;
+    }
+  }
+  return records;
 }
 async function currentTty(): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync("ps", ["-o", "tty=", "-p", String(process.pid)]);
+    const { stdout } = await execFileAsync("ps", ["-o", "tty=", "-p", String(process.pid)], { timeout: 5_000 });
     const tty = stdout.trim();
     return tty && tty !== "??" ? `/dev/${tty}` : undefined;
   } catch { return undefined; }
@@ -271,22 +340,58 @@ end run`;
   await execFileAsync("osascript", ["-e", script, session.file, session.cwd]);
 }
 
-async function registerCurrentSession(ctx: ExtensionContext): Promise<void> {
-  const file = ctx.sessionManager.getSessionFile();
-  const tty = await currentTty();
-  if (!file || !tty) return;
-  const registry = await loadRegistry();
-  const sessionId = ctx.sessionManager.getSessionId();
-  registry.records = registry.records.filter((record) => !(record.sessionId === sessionId && record.tty === tty));
-  registry.records.push({ sessionId, sessionFile: file, tty, updatedAt: Date.now() });
-  await saveRegistry(registry);
+function updateLiveSession(record?: RegistryRecord): Promise<void> {
+  const write = liveWriteQueue.then(async () => {
+    const next = record ?? (lastLiveRecord ? { ...lastLiveRecord, active: false, updatedAt: Date.now() } : undefined);
+    if (!next) return;
+    await mkdir(LIVE_DIRECTORY, { recursive: true, mode: 0o700 });
+    await mkdir(INDEX_DIRECTORY, { recursive: true, mode: 0o700 });
+    const temporary = `${LIVE_PATH}.${uuidv7()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600 });
+      await rename(temporary, LIVE_PATH);
+      lastLiveRecord = next;
+      if (record) {
+        // Publish only after the target is complete. Atomic replacement avoids
+        // a missing-index window. Shutdown never deletes another instance's index.
+        const indexTemporary = `${INDEX_PATH}.${INSTANCE_ID}.tmp`;
+        try {
+          await symlink(join("..", "live", `${INSTANCE_ID}.json`), indexTemporary);
+          await rename(indexTemporary, INDEX_PATH);
+        } finally {
+          try { await unlink(indexTemporary); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+      }
+    } finally {
+      try {
+        await unlink(temporary);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  });
+  // Report a failure to the event caller, but let subsequent updates recover.
+  liveWriteQueue = write.catch(() => {});
+  return write;
 }
-async function unregisterCurrentSession(ctx: ExtensionContext): Promise<void> {
+
+async function registerCurrentSession(ctx: ExtensionContext): Promise<void> {
+  // Capture session-bound data before awaiting anything: switching invalidates ctx.
+  const file = ctx.sessionManager.getSessionFile();
+  const sessionId = ctx.sessionManager.getSessionId();
+  const cwd = ctx.sessionManager.getCwd();
   const tty = await currentTty();
-  if (!tty) return;
-  const registry = await loadRegistry();
-  registry.records = registry.records.filter((record) => !(record.sessionId === ctx.sessionManager.getSessionId() && record.tty === tty));
-  await saveRegistry(registry);
+  if (!file || !tty || ctx.mode !== "tui") {
+    await updateLiveSession();
+    return;
+  }
+  await updateLiveSession({ version: 1, instanceId: INSTANCE_ID, active: true, pid: process.pid,
+    sessionId, sessionFile: file, tty, cwd, updatedAt: Date.now() });
+}
+async function unregisterCurrentSession(): Promise<void> {
+  await updateLiveSession();
 }
 
 function label(session: SessionItem): string { return session.name ?? session.prompt?.replace(/\s+/g, " ") ?? basename(session.file); }
@@ -331,10 +436,9 @@ end tell`;
  * while retaining unregistered terminals as focus-only picker entries.
  */
 async function liveSessions(sessions: SessionItem[]): Promise<OpenSessionItem[]> {
-  const [registry, terminals] = await Promise.all([loadRegistry(), ghosttyPiTerminals()]);
-  const terminalTtys = new Set(terminals.map((terminal) => terminal.tty));
-  const liveRecords = registry.records.filter((record) => terminalTtys.has(record.tty));
-  if (liveRecords.length !== registry.records.length) await saveRegistry({ records: liveRecords });
+  const [records, terminals] = await Promise.all([loadLiveRecords(), ghosttyPiTerminals()]);
+  const liveRecords = records.filter((record) => terminals.some((terminal) =>
+    terminal.tty === record.tty && terminal.pid === String(record.pid)));
   const recordsByTty = new Map<string, RegistryRecord>();
   for (const record of liveRecords.sort((a, b) => b.updatedAt - a.updatedAt)) {
     if (!recordsByTty.has(record.tty)) recordsByTty.set(record.tty, record);
@@ -358,8 +462,10 @@ async function liveSessions(sessions: SessionItem[]): Promise<OpenSessionItem[]>
 }
 
 async function activateSession(session: SessionItem, ctx: ExtensionContext): Promise<void> {
-  const registry = await loadRegistry();
-  for (const record of registry.records.filter((item) => item.sessionId === session.id).sort((a, b) => b.updatedAt - a.updatedAt)) {
+  const [records, terminals] = await Promise.all([loadLiveRecords(), ghosttyPiTerminals()]);
+  for (const record of records.filter((item) => item.sessionId === session.id &&
+    terminals.some((terminal) => terminal.tty === item.tty && terminal.pid === String(item.pid)))
+    .sort((a, b) => b.updatedAt - a.updatedAt)) {
     if (await focusGhostty(record.tty)) { ctx.ui.notify(`Focused: ${label(session)}`, "info"); return; }
   }
   try { await openGhostty(session); ctx.ui.notify(`Opened: ${label(session)}`, "info"); }
@@ -489,9 +595,16 @@ async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.L
 }
 
 export default function sessionManagerExtension(pi: ExtensionAPI): void {
-  pi.on("session_start", async (_event, ctx) => { await registerCurrentSession(ctx); });
+  let cleanedRetainedStates = false;
+  pi.on("session_start", async (_event, ctx) => {
+    await registerCurrentSession(ctx);
+    if (ctx.mode === "tui" && !cleanedRetainedStates) {
+      await cleanupRetainedStates();
+      cleanedRetainedStates = true;
+    }
+  });
   pi.on("session_info_changed", async (_event, ctx) => { await registerCurrentSession(ctx); });
-  pi.on("session_shutdown", async (_event, ctx) => { await unregisterCurrentSession(ctx); });
+  pi.on("session_shutdown", async () => { await unregisterCurrentSession(); });
   const autoname = async (ctx: ExtensionContext, session?: SessionItem) => autonameSession(pi, ctx, session);
   pi.registerShortcut(resolveShortcut(loadConfig(), process.env.PI_SESSION_MANAGER_SHORTCUT), { description: "Find and focus or resume a Pi session", handler: async (ctx) => showSessions(ctx, SessionScope.Live, (session) => autoname(ctx, session)) });
   pi.registerCommand("sessions", { description: "Find Pi sessions; scopes: live (default), closed, all", handler: async (args, ctx) => showSessions(ctx, parseSessionScope(args), (session) => autoname(ctx, session)) });

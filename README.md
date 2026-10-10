@@ -12,10 +12,33 @@ A [Pi](https://pi.dev) extension to search, focus, and resume persisted Pi sessi
   - a live session focuses its existing Ghostty tab/window;
   - a historical session makes a Ghostty tab and launches `pi --session <session-file>` there.
 - Run `/autoname` to name a session from the active branch's verified facts, remaining TODOs, and project area (for example Pi 插件, DNS, or Nginx, inferred from the session directory and task). By default, it generates three one-sentence candidates: use ↑↓ to choose, then tweak and submit the selected `/name ...` command in Pi's editor. Set `autonameMode` to `direct` for a single candidate that is applied after confirmation. In the picker, **Ctrl+Shift+N** names the highlighted registered session; historical sessions use an edit dialog in the default mode because `/name` would rename the current session instead. Unregistered Ghostty terminals remain focus-only until their Pi process loads the extension.
-- Tracks live Pi session-to-TTY associations in
-  `~/.pi/agent/pi-session-manager.json`.
+- Publishes each live Pi session in its own atomic state file:
+  `~/.pi/agent/pi-session-manager/live/<uuidv7>.json`, with a
+  `by-pid/<pid>.json` symlink for direct lookup.
 
-Pi's JSONL files at `~/.pi/agent/sessions/` remain the source of truth. The registry is only a disposable cache used to associate a live Pi process with a Ghostty terminal. The extension also enumerates Ghostty terminal PIDs to include unregistered Pi tabs as focus-only entries. Stale entries are harmless: Ghostty is queried before a tab is focused, and a new tab is opened when no matching surface exists.
+Pi's JSONL files remain the source of truth, including custom session storage locations.
+State contains `version: 1`, `instanceId` (UUIDv7), `active`, `pid`, `tty`, `cwd`,
+`sessionId`, `sessionFile`, and `updatedAt` (Unix milliseconds). Files and directories
+are created with permissions 0600 and 0700 respectively. Each plugin instance
+atomically replaces only its own UUID file on session start/switch and name changes,
+then atomically points `by-pid/<pid>.json` at that file. UUID files are retained on
+shutdown with `active: false`; indexes are not deleted, avoiding cleanup races with
+new instances. Reload creates a new instance UUID. In-memory and non-TUI sessions
+do not publish active state. This avoids shared-registry races and allows direct
+lookup without scanning retained UUID files.
+
+Once per interactive plugin load, UUID records not updated for 90 days (approximately
+three months) are cleaned up. Active records are retained while their PID still exists;
+crash leftovers can be removed once their process is gone. Cleanup never deletes Pi
+transcripts or PID indexes. A dangling index is ignored by consumers.
+
+The picker reads PID indexes and verifies active records against live Ghostty PIDs
+and TTYs before focusing a session. Ghostty
+restoration consumers must additionally reject records older than the foreground
+process's start time and validate the referenced JSONL header. Crash leftovers are
+not recovery history and must not be selected based on modification time alone.
+The old `pi-session-manager.json` registry is no longer read or written; no migration
+is required. Unregistered Pi tabs remain focus-only entries.
 
 ## Install
 
@@ -30,10 +53,12 @@ Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be instal
 Configure the shortcut and autoname behavior in `~/.pi/agent/pi-session-manager-config.json`:
 
 ```json
-{ "shortcut": "ctrl+shift+s", "autonameMode": "review" }
+{ "shortcut": "ctrl+shift+s", "autonameMode": "review", "stateRetentionDays": 90 }
 ```
 
 `review` is the default (three candidates, edit before naming). Use `"autonameMode": "direct"` to generate one candidate and rename immediately after confirmation. The mode is read each time you run `/autoname` or use the picker.
+`stateRetentionDays` must be a positive number and is read during startup cleanup;
+its default is 90 days.
 
 For a one-off override:
 
