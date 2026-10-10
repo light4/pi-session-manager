@@ -45,7 +45,7 @@ is required. Unregistered Pi tabs remain focus-only entries.
 Install the tagged release from GitHub:
 
 ```sh
-pi install git:github.com/light4/pi-session-manager@v0.2.16
+pi install git:github.com/light4/pi-session-manager@v0.3.0
 ```
 
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.
