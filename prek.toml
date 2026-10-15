@@ -1,0 +1,32 @@
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-added-large-files" },
+  { id = "check-merge-conflict" },
+  { id = "check-json" },
+  { id = "check-toml" },
+  { id = "check-yaml", args = ["--allow-multiple-documents"] },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "typecheck"
+name = "TypeScript typecheck"
+entry = "pnpm run typecheck"
+language = "system"
+files = '(^src/.*\.ts$|^tsconfig\.json$|^package\.json$|^pnpm-lock\.yaml$)'
+pass_filenames = false
+
+[[repos.hooks]]
+id = "test"
+name = "Unit tests"
+entry = "pnpm test"
+language = "system"
+files = '(^src/.*\.ts$|^test/.*\.ts$|^tsconfig\.json$|^package\.json$|^pnpm-lock\.yaml$)'
+pass_filenames = false

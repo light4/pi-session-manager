@@ -81,6 +81,17 @@ pnpm run typecheck
 pnpm test
 ```
 
+Install [prek](https://prek.j178.dev/installation/) and enable the Git hooks after cloning:
+
+```sh
+prek install
+prek run --all-files
+```
+
+`prek.toml` configures basic file checks plus the existing typecheck and unit tests
+for relevant changes. Run `pnpm install` before using the hooks. Each clone needs
+its own `prek install`.
+
 GitHub Actions runs typecheck, tests, and a package dry-run on pushes to `main` and pull requests. Unit tests do not exercise live Ghostty or Apple Events; terminal focus still needs manual testing on macOS.
 
 ## Release
