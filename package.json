@@ -1,6 +1,6 @@
 {
   "name": "@light4/pi-session-manager",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "packageManager": "pnpm@12.8.1",
   "description": "Discover, switch, and resume Pi sessions across terminal emulators.",
   "type": "module",

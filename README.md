@@ -45,7 +45,7 @@ is required. Unregistered Pi tabs remain focus-only entries.
 Install the tagged release from GitHub:
 
 ```sh
-pi install git:github.com/light4/pi-session-manager@v0.3.0
+pi install git:github.com/light4/pi-session-manager@v0.3.1
 ```
 
 Restart Pi (or run `/reload`) after installing. On macOS, Ghostty must be installed in `/Applications` and allowed to receive Apple Events if macOS asks for permission.
@@ -109,7 +109,7 @@ workflow itself needs a fix, commit it to `main` and use the manual publishing e
 point with the existing release tag (do not move published tags):
 
 ```sh
-gh workflow run publish.yml --ref main -f tag=v0.3.0
+gh workflow run publish.yml --ref main -f tag=v0.3.1
 ```
 
 Both checks and publishing use the selected tag. Publishing uses npm verbose logs
