@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -17,6 +17,12 @@ const INDEX_DIRECTORY = join(STATE_DIRECTORY, "by-pid");
 const INSTANCE_ID = uuidv7();
 const LIVE_PATH = join(LIVE_DIRECTORY, `${INSTANCE_ID}.json`);
 const INDEX_PATH = join(INDEX_DIRECTORY, `${process.pid}.json`);
+// Session metadata is cached by file size/mtime so the picker never re-parses
+// unchanged transcripts; appended transcripts are scanned from the last offset.
+const SESSION_CACHE_PATH = join(STATE_DIRECTORY, "session-index.json");
+const SESSION_CACHE_VERSION = 1;
+// Search and labels only need the start of the first prompt; bound the cache size.
+const MAX_PROMPT_LENGTH = 4_000;
 let lastLiveRecord: RegistryRecord | undefined;
 let liveWriteQueue: Promise<void> = Promise.resolve();
 // Unlike Option/Alt, Ctrl+Shift is consistently forwarded by Ghostty on macOS.
@@ -153,22 +159,95 @@ function normalizeTitle(text: string): string {
   return text.replace(/^["'“”‘’`\s]+|["'“”‘’`\s]+$/g, "").replace(/\s+/g, " ");
 }
 
-/** Parse a Pi JSONL file without loading it through Pi's session manager. */
-export function parseSession(file: string, content: string, updatedAt: number): SessionItem | undefined {
-  let id: string | undefined;
-  let cwd: string | undefined;
-  let name: string | undefined;
-  let prompt: string | undefined;
+interface SessionMetadata { id?: string; cwd?: string; name?: string; prompt?: string }
+
+const LINE_TYPE = /^\{"type":"([a-z_]+)"/;
+
+/** Fold JSONL lines into metadata, skipping JSON.parse for irrelevant entries. */
+function scanSessionLines(metadata: SessionMetadata, content: string): void {
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
+    // Pi serialises `type` first; fall back to a full parse for any other layout.
+    const type = LINE_TYPE.exec(line)?.[1];
+    if (type !== undefined && type !== "session" && type !== "session_info" && (type !== "message" || metadata.prompt)) continue;
     try {
       const entry = JSON.parse(line) as { type?: string; id?: string; cwd?: string; name?: string; message?: { role?: string; content?: unknown } };
-      if (entry.type === "session") { id = entry.id; cwd = entry.cwd; }
-      if (entry.type === "session_info" && entry.name !== undefined) name = entry.name || undefined;
-      if (entry.type === "message" && entry.message?.role === "user" && !prompt) prompt = textContent(entry.message.content);
+      if (entry.type === "session") { metadata.id = entry.id; metadata.cwd = entry.cwd; }
+      if (entry.type === "session_info" && entry.name !== undefined) metadata.name = entry.name || undefined;
+      if (entry.type === "message" && entry.message?.role === "user" && !metadata.prompt) metadata.prompt = textContent(entry.message.content)?.slice(0, MAX_PROMPT_LENGTH);
     } catch { /* An interrupted final append must not hide an otherwise usable session. */ }
   }
+}
+
+function sessionItem(file: string, metadata: SessionMetadata, updatedAt: number): SessionItem | undefined {
+  const { id, cwd, name, prompt } = metadata;
   return id && cwd ? { id, file, cwd, name, prompt, updatedAt } : undefined;
+}
+
+/** Parse a Pi JSONL file without loading it through Pi's session manager. */
+export function parseSession(file: string, content: string, updatedAt: number): SessionItem | undefined {
+  const metadata: SessionMetadata = {};
+  scanSessionLines(metadata, content);
+  return sessionItem(file, metadata, updatedAt);
+}
+
+interface CachedSession extends SessionMetadata {
+  size: number;
+  mtimeMs: number;
+  /** Byte offset just past the last complete line already scanned. */
+  offset: number;
+}
+
+interface SessionCache { version: number; files: Record<string, CachedSession> }
+
+async function loadSessionCache(): Promise<Record<string, CachedSession>> {
+  try {
+    const cache = JSON.parse(await readFile(SESSION_CACHE_PATH, "utf8")) as SessionCache;
+    return cache?.version === SESSION_CACHE_VERSION && cache.files && typeof cache.files === "object" ? cache.files : {};
+  } catch { return {}; }
+}
+
+async function saveSessionCache(files: Record<string, CachedSession>): Promise<void> {
+  await mkdir(STATE_DIRECTORY, { recursive: true, mode: 0o700 });
+  const temporary = `${SESSION_CACHE_PATH}.${uuidv7()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify({ version: SESSION_CACHE_VERSION, files } satisfies SessionCache), { mode: 0o600 });
+    await rename(temporary, SESSION_CACHE_PATH);
+  } finally {
+    try { await unlink(temporary); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
+/** Read `[start, end)` as UTF-8 and report the offset after its last newline. */
+async function readSessionBytes(file: string, start: number, end: number): Promise<{ content: string; offset: number }> {
+  const handle = await open(file, "r");
+  try {
+    const buffer = Buffer.alloc(end - start);
+    let read = 0;
+    while (read < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, read, buffer.length - read, start + read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
+    }
+    const bytes = buffer.subarray(0, read);
+    // Offsets always follow a newline byte, so chunks never split a UTF-8 sequence.
+    return { content: bytes.toString("utf8"), offset: start + bytes.lastIndexOf(0x0a) + 1 };
+  } finally { await handle.close(); }
+}
+
+async function loadSession(file: string, cached: CachedSession | undefined): Promise<CachedSession | undefined> {
+  const { size, mtimeMs } = await stat(file);
+  if (cached && cached.size === size && cached.mtimeMs === mtimeMs) return cached;
+  // Pi transcripts are append-only: resume from the last complete line when the
+  // file grew, otherwise (truncated/replaced) rescan it from the start.
+  const resume = cached && size >= cached.size && cached.offset <= size;
+  const start = resume ? cached.offset : 0;
+  const metadata: SessionMetadata = resume ? { id: cached.id, cwd: cached.cwd, name: cached.name, prompt: cached.prompt } : {};
+  const { content, offset } = await readSessionBytes(file, start, size);
+  scanSessionLines(metadata, content);
+  return { ...metadata, size, mtimeMs, offset: Math.max(offset, start) };
 }
 
 async function walkJsonl(directory: string): Promise<string[]> {
@@ -185,13 +264,22 @@ async function walkJsonl(directory: string): Promise<string[]> {
 
 async function listSessions(): Promise<SessionItem[]> {
   const root = join(homedir(), CONFIG_DIR_NAME, "agent", "sessions");
-  const files = await walkJsonl(root);
+  const [files, cache] = await Promise.all([walkJsonl(root), loadSessionCache()]);
+  const next: Record<string, CachedSession> = {};
+  let changed = Object.keys(cache).length !== files.length;
   const sessions = await Promise.all(files.map(async (file) => {
     try {
-      const [content, stats] = await Promise.all([readFile(file, "utf8"), stat(file)]);
-      return parseSession(file, content, stats.mtimeMs);
-    } catch { return undefined; }
+      const entry = await loadSession(file, cache[file]);
+      if (!entry) return undefined;
+      next[file] = entry;
+      if (entry !== cache[file]) changed = true;
+      return sessionItem(file, entry, entry.mtimeMs);
+    } catch { changed = true; return undefined; }
   }));
+  if (changed) {
+    // The cache only accelerates discovery; a failed write must not break the picker.
+    try { await saveSessionCache(next); } catch { /* ignore */ }
+  }
   return sessions.filter((item): item is SessionItem => item !== undefined).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -277,17 +365,12 @@ async function currentTty(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
+// `whose` filters inside Ghostty in one Apple event instead of one per surface.
 async function ghosttyHasTty(tty: string): Promise<boolean> {
   const script = `on run argv
 set targetTTY to item 1 of argv
 tell application "Ghostty"
- repeat with theWindow in windows
-  repeat with theTab in tabs of theWindow
-   repeat with theTerminal in terminals of theTab
-    if (tty of theTerminal) is targetTTY then return "found"
-   end repeat
-  end repeat
- end repeat
+ if (count of (every terminal whose tty is targetTTY)) > 0 then return "found"
 end tell
 return "not-found"
 end run`;
@@ -301,16 +384,11 @@ async function focusGhostty(tty: string): Promise<boolean> {
   const script = `on run argv
 set targetTTY to item 1 of argv
 tell application "Ghostty"
- repeat with theWindow in windows
-  repeat with theTab in tabs of theWindow
-   repeat with theTerminal in terminals of theTab
-    if (tty of theTerminal) is targetTTY then
-     focus theTerminal
-     return "focused"
-    end if
-   end repeat
-  end repeat
- end repeat
+ set matches to every terminal whose tty is targetTTY
+ if (count of matches) > 0 then
+  focus (item 1 of matches)
+  return "focused"
+ end if
 end tell
 return "not-found"
 end run`;
@@ -405,28 +483,46 @@ async function cwdForProcess(pid: string): Promise<string | undefined> {
 
 /** Discover Ghostty surfaces whose foreground process is Pi, even if they have not loaded this extension. */
 async function ghosttyPiTerminals(): Promise<GhosttyTerminal[]> {
-  const script = `tell application "Ghostty"
-set rows to {}
-repeat with theWindow in windows
- repeat with theTab in tabs of theWindow
-  repeat with theTerminal in terminals of theTab
-   set end of rows to ((tty of theTerminal) as text) & (ASCII character 9) & ((pid of theTerminal) as text) & (ASCII character 9) & ((name of theTerminal) as text)
-  end repeat
+  // Fetch every surface's properties in a single Apple event; walking
+  // windows/tabs/terminals costs one round trip per property per surface.
+  // Record fields use Ghostty's terminology, so read them inside the tell block.
+  // Ghostty defines a `tab` class, so bind the separator outside its tell block.
+  const script = `set separator to ASCII character 9
+tell application "Ghostty"
+ set surfaces to properties of every terminal
+ set rows to {}
+ repeat with surface in surfaces
+  set cwd to working directory of surface
+  if cwd is missing value then set cwd to ""
+  set end of rows to ((tty of surface) as text) & separator & ((pid of surface) as text) & separator & ((name of surface) as text) & separator & (cwd as text)
  end repeat
-end repeat
+end tell
 set AppleScript's text item delimiters to linefeed
-return rows as text
-end tell`;
+return rows as text`;
   let stdout: string;
-  try { ({ stdout } = await execFileAsync("osascript", ["-e", script])); } catch { return []; }
-  const surfaces = stdout.trim().split("\n").map((line) => line.split("\t")).filter((row) => row.length === 3);
-  const terminals = await Promise.all(surfaces.map(async ([tty, pid, name]) => {
-    try {
-      const { stdout: command } = await execFileAsync("ps", ["-o", "command=", "-p", pid!]);
-      if (!/(^|\/)pi(?:\s|$)/.test(command.trim())) return undefined;
-      const cwd = await cwdForProcess(pid!);
-      return cwd ? { tty: tty!, pid: pid!, name: name!, cwd } : undefined;
-    } catch { return undefined; }
+  try { ({ stdout } = await execFileAsync("osascript", ["-e", script], { timeout: 10_000 })); } catch { return []; }
+  const surfaces = stdout.trim().split("\n").map((line) => line.split("\t"))
+    .filter((row) => row.length >= 4 && /^\d+$/.test(row[1]!))
+    // Titles may contain tabs; the working directory is always the last field.
+    .map((row) => ({ tty: row[0]!, pid: row[1]!, name: row.slice(2, -1).join("\t"), cwd: row.at(-1)! }));
+  if (!surfaces.length) return [];
+  let table: string;
+  try {
+    ({ stdout: table } = await execFileAsync("ps", ["-o", "pid=,command=", "-p", surfaces.map((surface) => surface.pid).join(",")], { timeout: 5_000 }));
+  } catch (error) {
+    // ps exits 1 when some PIDs have already exited but still prints the rest.
+    table = (error as { stdout?: string }).stdout ?? "";
+  }
+  const commands = new Map<string, string>();
+  for (const line of table.split("\n")) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (match) commands.set(match[1]!, match[2]!.trim());
+  }
+  const terminals = await Promise.all(surfaces.map(async ({ tty, pid, name, cwd }) => {
+    const command = commands.get(pid);
+    if (!command || !/(^|\/)pi(?:\s|$)/.test(command)) return undefined;
+    const directory = cwd || await cwdForProcess(pid);
+    return directory ? { tty, pid, name, cwd: directory } : undefined;
   }));
   return terminals.filter((terminal): terminal is GhosttyTerminal => terminal !== undefined);
 }
@@ -435,8 +531,8 @@ end tell`;
  * Pair every live Ghostty Pi terminal with a session when it has registered,
  * while retaining unregistered terminals as focus-only picker entries.
  */
-async function liveSessions(sessions: SessionItem[]): Promise<OpenSessionItem[]> {
-  const [records, terminals] = await Promise.all([loadLiveRecords(), ghosttyPiTerminals()]);
+async function liveSessions(sessions: SessionItem[], discovery: Promise<[RegistryRecord[], GhosttyTerminal[]]>): Promise<OpenSessionItem[]> {
+  const [records, terminals] = await discovery;
   const liveRecords = records.filter((record) => terminals.some((terminal) =>
     terminal.tty === record.tty && terminal.pid === String(record.pid)));
   const recordsByTty = new Map<string, RegistryRecord>();
@@ -541,9 +637,12 @@ export async function autonameSession(pi: ExtensionAPI, ctx: ExtensionContext, t
 
 async function showSessions(ctx: ExtensionContext, initialScope = SessionScope.Live, onAutoname?: (session?: SessionItem) => Promise<void>): Promise<void> {
   if (ctx.mode !== "tui") { ctx.ui.notify("/sessions requires Pi's interactive TUI.", "warning"); return; }
+  // Ghostty/registry discovery is independent of transcript scanning; overlap them.
+  const discovery = Promise.all([loadLiveRecords(), ghosttyPiTerminals()]);
+  discovery.catch(() => {});
   const sessions = await listSessions();
   if (!sessions.length) { ctx.ui.notify("No persisted Pi sessions found.", "info"); return; }
-  const live = await liveSessions(sessions);
+  const live = await liveSessions(sessions, discovery);
   const liveIds = new Set(live.flatMap((session) => session.sessionId ? [session.sessionId] : []));
   const closed = sessions.filter((session) => !liveIds.has(session.id));
   const selected = await ctx.ui.custom<string | null>((tui, theme, _keys, done) => {
